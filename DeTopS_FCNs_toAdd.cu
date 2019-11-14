@@ -9,6 +9,7 @@
 #include <ctime>      //Used for CPU timing code
 #include <pthread.h>  //Used for parallel CPU threads
 #include <mutex>      //Used for synchronization of parallel cpu code
+#include <algorithm>
 
 static void CheckCudaErrorAux(const char*, unsigned, const char*, cudaError_t);
 #define CUDA_CHECK_RETURN(value) CheckCudaErrorAux(__FILE__,__LINE__, #value, value)
@@ -49,6 +50,7 @@ __device__ T desc_jaccard_dist(
 ) {
 
 	float descriptiveIntersectionCardinality = 0.0f; 
+	float unionCardinality = 0.0f;
 	
 	//starting at index_B * size_A + index_A of the array containing all descriptive intersections (in row major layout), get all the vectors that aren't minFloat
 	int desc_intersections_index = index_B * size_A + index_A;
@@ -57,7 +59,6 @@ __device__ T desc_jaccard_dist(
 			descriptiveIntersectionCardinality += 1.0f;
 		}
 	}
-	float unionCardinality = 0.0f;
 
 	//get the number of vectors in the description of A
 	for (int i = 0; i < size_A; i += VECTOR_SIZE) {
@@ -68,15 +69,19 @@ __device__ T desc_jaccard_dist(
 
 	//get the number of vectors in the description of B, not in A
 	for (int i = 0; i < size_B; i += VECTOR_SIZE) {
-		//for every vector in B's description that's not the initilized negative number
+		//for every vector in B's description that's not the initilized minFloat
 		if (B_desc[i] != minFloat) {
 			bool isUnique = true;
-			for (int j = 0; j < size_A && isUnique; j += VECTOR_SIZE) {
+			for (int j = 0; isUnique && j < size_A; j += VECTOR_SIZE) {
+				bool termIsRepeated = true;
 				//Check it against every term of the vector in the description of A
-				for (int k = 0; k < VECTOR_SIZE; k++) {
-					if (B_desc[i+k] == A_desc[j+k]) {
-						isUnique = false;
+				for (int k = 0; termIsRepeated && k < VECTOR_SIZE; k++) {
+					if (B_desc[i+k] != A_desc[j+k]) {
+						termIsRepeated = false;
 					}
+				}
+				if (termIsRepeated) {
+					isUnique = false;
 				}
 			}
 			if (isUnique) {
@@ -84,42 +89,137 @@ __device__ T desc_jaccard_dist(
 			}
 		}	
 	}
-	return desc_intersection[desc_intersections_index];
-	//return (1.0f - descriptiveIntersectionCardinality / unionCardinality);
+	//return descriptiveIntersectionCardinality;	//should be 2
+	//return unionCardinality;	//should be 4
+	return (1.0f - descriptiveIntersectionCardinality / unionCardinality);
 }
 
 template <typename T>
 __device__ metric_t<T> p_desc_jaccard_dist = desc_jaccard_dist<T>;
 
 template <typename T>
-__global__ void runMetricOnGPU(metric_t<T> metric, T* d_A, T* d_B, T* d_inter, T* result, float minFloat, unsigned VECTOR_SIZE, unsigned VECTORS_PER_SUBSET)
-{
+__global__ void runMetricOnGPU(
+	metric_t<T> metric, 
+	T* d_A, 
+	T* d_B, 
+	T* d_inter, 
+	T* result, 
+	float minFloat, 
+	unsigned VECTOR_SIZE, 
+	unsigned VECTORS_PER_SUBSET
+) {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	int size = VECTOR_SIZE * VECTORS_PER_SUBSET;
 	*result = (*metric)(d_A, d_B, d_inter, i, i, size, size, minFloat, VECTOR_SIZE);
 }
 
+//Kernel needs to be launch with blocks per number of vectors
+__global__ void setDifferenceOfFamilies(
+	float* d_A,
+	float* d_B,
+	float* d_output,
+	unsigned size,
+	unsigned VECTOR_SIZE,
+	float minFloat
+) {
+	int vectorStartingIndex = (blockIdx.x * blockDim.x + threadIdx.x) * VECTOR_SIZE;
+
+	if (vectorStartingIndex < size) {
+		float* termToCheck = new float[VECTOR_SIZE];
+		for (int i = 0; i < VECTOR_SIZE; i++) {
+			termToCheck[i] = d_A[vectorStartingIndex + i];
+		}
+		bool termIsInB = false;
+		//check our term against each term in d_B
+		for (int i = 0; i < size; i++) {
+			bool termIsPartiallyInB = true;
+			//check each vector term by term
+			for (int j = 0; termIsPartiallyInB && j < VECTOR_SIZE; j++) {
+				if (termToCheck[j] != d_B[i + j]) {
+					termIsPartiallyInB = false;
+				}
+			}
+			if (termIsPartiallyInB) {
+				termIsInB = true;
+			}
+		}
+		//if term is not found, write to output based on term index
+		if (termIsInB == false) {
+			for (int i = 0; i < VECTOR_SIZE; i++) {
+				d_output[vectorStartingIndex + i] = termToCheck[i];
+			}
+		}
+		else {
+			for (int i = 0; i < VECTOR_SIZE; i++) {
+				d_output[vectorStartingIndex + i] = minFloat;
+			}
+		}
+	}
+}
+
 template <typename T>
-void dIteratedPseudometric(T* A_desc, T* B_desc, T* desc_intersection, unsigned size) {
+void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsigned size) {
 
 	metric_t<T> h_desc_jaccard_dist;
 
 	T *d_A;
 	T *d_B;
 	T *d_inter;
-	
-	//desc_intersection will be calculated in a kernel in the future rather than a param
+	T* family_A_less_B = new T[size/2];
+	T* family_B_less_A = new T[size/2];
+	T* d_output;
+
+	cudaMalloc((void**)&d_A, sizeof(T) * size/2);
+	cudaMalloc((void**)&d_B, sizeof(T) * size/2);
+	cudaMalloc((void**)&d_output, sizeof(T) * size/2);
+	cudaMemcpy(d_A, family_A, sizeof(T) * size/2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, family_B, sizeof(T) * size/2, cudaMemcpyHostToDevice);
+
+	//TODO: fix kernel parameters
+	setDifferenceOfFamilies << <1, VECTORS_PER_SUBSET >> > (
+		d_A,
+		d_B,
+		d_output,
+		size,
+		VECTOR_SIZE,
+		minFloat
+	);
+
+	cudaMemcpy(family_A_less_B, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
+
+	for (unsigned i = 0; i < size/2; i++) {
+		cout << "family_A_less_B[" << i << "]=" << family_A_less_B[i] << endl;
+	}
+
+	//TODO: Fix kernel parameters
+	setDifferenceOfFamilies << <1, VECTORS_PER_SUBSET >> > (
+		d_B,
+		d_A,
+		d_output,
+		size,
+		VECTOR_SIZE,
+		minFloat
+	);
+
+	cudaMemcpy(family_B_less_A, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
+
+	for (unsigned i = 0; i < size/2; i++) {
+		cout << "family_B_less_A[" << i << "]=" << family_B_less_A[i] << endl;
+	}
+
+
+	//TODO: desc_intersection will be calculated in a kernel in the future rather than a param
 	
 	for (unsigned i = 0; i < size; i++) {
 		cout << "desc_int[" << i << "]=" << desc_intersection[i] << endl;
 	}
 
-	cudaMalloc((void**)&d_A, sizeof(T) * size);
-	cudaMalloc((void**)&d_B, sizeof(T) * size);
+	cudaMalloc((void**)&d_A, sizeof(T) * size/2);
+	cudaMalloc((void**)&d_B, sizeof(T) * size/2);
 	cudaMalloc((void**)&d_inter, sizeof(T) * size);
-	cudaMemcpy(d_A, &A_desc, sizeof(T), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, &B_desc, sizeof(T) * size, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_inter, &desc_intersection, sizeof(T) * size, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_A, family_A, sizeof(T) * size/2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, family_B, sizeof(T) * size/2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_inter, desc_intersection, sizeof(T) * size, cudaMemcpyHostToDevice);
 
 	T result;
 	T* d_result, * h_result;
@@ -129,7 +229,8 @@ void dIteratedPseudometric(T* A_desc, T* B_desc, T* desc_intersection, unsigned 
 	// Copy device function pointer to host side
 	cudaMemcpyFromSymbol(&h_desc_jaccard_dist, p_desc_jaccard_dist<T>, sizeof(metric_t<T>));
 
-	runMetricOnGPU<T> << <1, 1 >> > (h_desc_jaccard_dist, d_A, d_B, d_inter, d_result, minFloat, VECTOR_SIZE, VECTORS_PER_SUBSET);
+	//TODO: fix kernel parameters
+	runMetricOnGPU<T> <<<1,4>>> (h_desc_jaccard_dist, d_A, d_B, d_inter, d_result, minFloat, VECTOR_SIZE, VECTORS_PER_SUBSET);
 	cudaDeviceSynchronize();
 	cudaMemcpy(h_result, d_result, sizeof(T), cudaMemcpyDeviceToHost);
 	std::cout << "d Iterated Pseudometric Distance: " << result << " (Should be 0.5)" << std::endl;
@@ -140,10 +241,6 @@ void initNegative(float* data, unsigned size) {
 	for (unsigned i = 0; i < size; ++i) {
 		data[i] = minFloat;
 	}
-}
-
-void setDifference(float* a, float* b, float* out) {
-	//TODO
 }
 
 void getSetDescription(float* input, float* output, unsigned size) {
@@ -212,55 +309,64 @@ int main(void) {
 	cudaDeviceProp deviceProp;
 	CUDA_CHECK_RETURN(cudaGetDeviceProperties(&deviceProp, device));
 
-	float a_0[6] = {
-		2,1,
-		3,3,
-		3,2
-	};
-	float a_1[6] = {
-		1,0,
-		3,2,
-		2,1
-	};
-	float b_0[6] = {
-		2,1,
-		3,3,
-		3,0
-	};
-	float b_1[6] = {
-		2,1,
-		3,3,
-		4,3
-	};
+	//might need to change this to size_A and size_B
+	unsigned size = VECTORS_PER_SUBSET * VECTOR_SIZE * (F_SUBSET_COUNT / 2);
 
-	unsigned size = VECTORS_PER_SUBSET * VECTOR_SIZE;
+	float* family_A = new float[size];
+	family_A[0] = 2;
+	family_A[1] = 1;
+	family_A[2] = 3;
+	family_A[3] = 3;
+	family_A[4] = 3;
+	family_A[5] = 2;
+	family_A[6] = 1;
+	family_A[7] = 0;
+	family_A[8] = 3;
+	family_A[9] = 2;
+	family_A[10] = 2;
+	family_A[11] = 1;
 
-	float* desc_a0 = new float[size];
-	float* desc_b0 = new float[size];
-	float* desc_a1 = new float[size];
-	float* desc_b1 = new float[size];
-	
+	float* family_B = new float[size];
+	family_B[0] = 2;
+	family_B[1] = 1;
+	family_B[2] = 3;
+	family_B[3] = 3;
+	family_B[4] = 3;
+	family_B[5] = 0;
+	family_B[6] = 2;
+	family_B[7] = 1;
+	family_B[8] = 3;
+	family_B[9] = 3;
+	family_B[10] = 4;
+	family_B[11] = 3;
+
 	//setup array for desc intersection kernel(?) <-- this should be done in template
 	//Hard coding intersections for now
-	float *desc_inter_h = new float[size];
-	initNegative(desc_inter_h, size);
+
+	//if we use the two different sizes, they need to be added here, not multiplied
+	unsigned intersectionSize = size * 2;
+
+	float *desc_inter_h = new float[intersectionSize];
+	initNegative(desc_inter_h, intersectionSize);
 
 	desc_inter_h[0] = 2;
 	desc_inter_h[1] = 1;
 	desc_inter_h[2] = 3;
 	desc_inter_h[3] = 3;
-
-	for (unsigned i = 0; i < size; i++) {
-		cout << "dih[" << i << "]=" << desc_inter_h[i] << endl;
-	}
-
-	getSetDescription(a_0, desc_a0, size);
-	getSetDescription(b_0, desc_b0, size);
-	getSetDescription(a_1, desc_a1, size);
-	getSetDescription(b_1, desc_b1, size);
-
-	dIteratedPseudometric<float>(desc_a0, desc_b0, desc_inter_h, size);
+	desc_inter_h[6] = 2;
+	desc_inter_h[7] = 1;
+	desc_inter_h[8] = 3;
+	desc_inter_h[9] = 2;
+	desc_inter_h[12] = 2;
+	desc_inter_h[13] = 1;
+	desc_inter_h[18] = 2;
+	desc_inter_h[19] = 1;
+	desc_inter_h[20] = 3;
+	desc_inter_h[21] = 2;
 	
+	//might need to pass size_A and size_B
+	dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
+
 	//cout << "done.\nFreeing memory ...";
 	//delete[] a_0;
 	//delete[] a_1;
