@@ -13,6 +13,9 @@
   <ItemGroup>
     <CudaCompile Include="DeTopS_FCNs_toAdd.cu" />
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="EVERYTHING_IS_BROKEN.cpp" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{63A0F948-79F9-4043-B9DD-5F3CBFFE6561}</ProjectGuid>
     <RootNamespace>Descriptive_Intersection_of_Filters</RootNamespace>
