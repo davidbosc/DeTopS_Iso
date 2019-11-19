@@ -29,7 +29,9 @@ Next, we'll apply a metric on both families of sets.  The d-iterated pseudometri
 
 //TODO: work out solutions, add work done by hand, 
 
-Δ<sub>d<sub>J</sub></sub>(A,B) = ???
+Δ<sub>d<sub>J</sub></sub>(A,C) = ???
+
+Δ<sub>d<sub>J</sub></sub>(B,C) = ???
 
 Since d(A,) < d(A,) we can say A is descriptively nearer to  than .
 
