@@ -106,22 +106,35 @@ template <typename T>
 __global__ void runMetricOnGPU(
 	metric_t<T> metric, 
 	T* d_A, 
-	T* d_B, 
+	T* d_B,
 	T* d_inter, 
 	T* result, 
 	float minFloat, 
+	//unsigned sizeOfA,
+	//unsigned sizeOfB,
 	unsigned VECTOR_SIZE, 
 	unsigned VECTORS_PER_SUBSET
-	//add size_A, size_B
 ) {
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	
 	//TODO: incorporate shared memory (MATRIX MUL SHOULD GIVE A GOOD CLUE FOR THIS)
 
-	//replaced when size_A, size_B implemented
-	int size = VECTOR_SIZE * VECTORS_PER_SUBSET;
-	result[row * VECTOR_SIZE + col] = (*metric)(d_A, d_B, d_inter, row, col, size, size, minFloat, VECTOR_SIZE, VECTORS_PER_SUBSET);
+	//TODO: This will need to be changed based on the number of sets passed to this metric 
+	//can be thought of like a 2x1 matrix, for example
+	unsigned size = VECTOR_SIZE * VECTORS_PER_SUBSET;
+	result[row * VECTOR_SIZE + col] = (*metric)(
+		d_A, 
+		d_B, 
+		d_inter, 
+		row, 
+		col, 
+		size, 
+		size, 
+		minFloat, 
+		VECTOR_SIZE, 
+		VECTORS_PER_SUBSET
+	);
 }
 
 //TODO: Utilize a lambda or template to call any metric with this function
@@ -132,10 +145,15 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 
 	T *d_A;
 	T *d_B;
-	T *d_inter;
-	T* family_A_less_B = new T[size/2];
-	T* family_B_less_A = new T[size/2];
+	T* d_inter;
+	T* d_family_A_less_B;
+	T* d_family_B_less_A;
 	T* d_output;
+
+	T* h_family_A_less_B = new T[size / 2];
+	T* h_family_B_less_A = new T[size / 2];
+	unsigned sizeOfFamilyALessB;
+	unsigned sizeOfFamilyBLessA;
 
 	cudaMalloc((void**)&d_A, sizeof(T) * size/2);
 	cudaMalloc((void**)&d_B, sizeof(T) * size/2);
@@ -156,10 +174,13 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 		minFloat
 	);
 
-	cudaMemcpy(family_A_less_B, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_family_A_less_B, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
 
+	sizeOfFamilyALessB = getFamilyCardinality(h_family_A_less_B, size);
+
+	cout << "|family_A_less_B| = " << sizeOfFamilyALessB << endl;
 	for (unsigned i = 0; i < size/2; i++) {
-		cout << "family_A_less_B[" << i << "]=" << family_A_less_B[i] << endl;
+		cout << "family_A_less_B[" << i << "]=" << h_family_A_less_B[i] << endl;
 	}
 
 	//TODO: Fix kernel parameters
@@ -173,12 +194,14 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 		minFloat
 	);
 
-	cudaMemcpy(family_B_less_A, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_family_B_less_A, d_output, sizeof(T) * size/2, cudaMemcpyDeviceToHost);
 
+	sizeOfFamilyBLessA = getFamilyCardinality(h_family_B_less_A, size);
+
+	cout << "\n|family_B_less_A| = " << sizeOfFamilyBLessA << endl;
 	for (unsigned i = 0; i < size/2; i++) {
-		cout << "family_B_less_A[" << i << "]=" << family_B_less_A[i] << endl;
+		cout << "family_B_less_A[" << i << "]=" << h_family_B_less_A[i] << endl;
 	}
-
 
 	//TODO: desc_intersection will be calculated in a kernel in the future rather than a param
 	
@@ -186,11 +209,18 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 		cout << "desc_int[" << i << "]=" << desc_intersection[i] << endl;
 	}
 
-	cudaMalloc((void**)&d_A, sizeof(T) * size/2);
-	cudaMalloc((void**)&d_B, sizeof(T) * size/2);
+	//allocate to device
+	cudaMalloc((void**)&d_A, sizeof(T) * size / 2);
+	cudaMalloc((void**)&d_B, sizeof(T) * size / 2);
+	cudaMalloc((void**)&d_family_A_less_B, sizeof(T) * size / 2);
+	cudaMalloc((void**)&d_family_B_less_A, sizeof(T) * size / 2);
 	cudaMalloc((void**)&d_inter, sizeof(T) * size);
-	cudaMemcpy(d_A, family_A, sizeof(T) * size/2, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, family_B, sizeof(T) * size/2, cudaMemcpyHostToDevice);
+
+	//copy to device
+	cudaMemcpy(d_A, family_A, sizeof(T) * size / 2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, family_B, sizeof(T) * size / 2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_family_A_less_B, h_family_A_less_B, sizeof(T) * size / 2, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_family_B_less_A, h_family_B_less_A, sizeof(T) * size / 2, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_inter, desc_intersection, sizeof(T) * size, cudaMemcpyHostToDevice);
 
 	T* d_result;
@@ -211,16 +241,47 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 	dim3 jaccardGrid(1, 1);
 	dim3 jaccardBlock(2, 2);
 
-	runMetricOnGPU<T> <<<jaccardGrid, jaccardBlock>>> (d_metric, d_A, d_B, d_inter, d_result, minFloat, VECTOR_SIZE, VECTORS_PER_SUBSET);
+	runMetricOnGPU<T> << <jaccardGrid, jaccardBlock >> > (
+		d_metric,
+		d_A,
+		d_family_B_less_A,
+		d_inter,
+		d_result,
+		minFloat,
+		VECTOR_SIZE,
+		VECTORS_PER_SUBSET);
 
 	cudaDeviceSynchronize();
 	cudaMemcpy(h_result, d_result, sizeof(T) * (F_SUBSET_COUNT * F_SUBSET_COUNT / 4), cudaMemcpyDeviceToHost);
-	T result = 0;
+	T result1 = 0;
 	for (unsigned i = 0; i < (F_SUBSET_COUNT * F_SUBSET_COUNT / 4); i++) {
-		cout << "h_result[" << i << "]=" << h_result[i] << endl;
-		result += h_result[i];
+		cout << "h_result1[" << i << "]=" << h_result[i] << endl;
+		result1 += h_result[i];
 	}
-	std::cout << "d Iterated Pseudometric Distance: " << result << " (Should be 2.4)" << std::endl;
+	result1 /= ((F_SUBSET_COUNT / 2) * sizeOfFamilyBLessA);
+
+	runMetricOnGPU<T> << <jaccardGrid, jaccardBlock >> > (
+		d_metric,
+		d_family_A_less_B,
+		d_B,
+		d_inter,
+		d_result,
+		minFloat,
+		VECTOR_SIZE,
+		VECTORS_PER_SUBSET);
+
+	cudaDeviceSynchronize();
+	cudaMemcpy(h_result, d_result, sizeof(T) * (F_SUBSET_COUNT * F_SUBSET_COUNT / 4), cudaMemcpyDeviceToHost);
+	T result2 = 0;
+	for (unsigned i = 0; i < (F_SUBSET_COUNT * F_SUBSET_COUNT / 4); i++) {
+		cout << "h_result2[" << i << "]=" << h_result[i] << endl;
+		result2 += h_result[i];
+	}
+	result2 /= ((F_SUBSET_COUNT / 2) * sizeOfFamilyALessB);
+
+	T result = result1 + result2;
+
+	cout << "d Iterated Pseudometric Distance: " << result << " (Should be 1.2)" << endl;
 }
 
 void initNegative(float* data, unsigned size) {
@@ -289,6 +350,29 @@ __global__ void setDifferenceOfFamilies(
 			}
 		}
 	}
+}
+
+unsigned getFamilyCardinality(float* input, unsigned size) {
+	unsigned setSize = F_SUBSET_COUNT / 2;
+	unsigned index = 0;
+	//for each subset in input family of sets
+	while(index < setSize) {
+		//if we encounter a subset with a vector that starts with minFloat
+		//swap the subsets with the row-major index of our final subset based on our running setSize
+		//decrease the set size if this is the case (we have a 'nulled' out subset from set difference on the families)
+		if (input[index * VECTOR_SIZE * VECTORS_PER_SUBSET] == minFloat) {
+			for (int i = 0; i < VECTOR_SIZE * VECTORS_PER_SUBSET; i++) {
+				float temp = input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i];
+				input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i] 
+					= input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - ((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)];
+				input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - ((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)] = temp;
+			}
+			setSize--;
+		} else {
+			index++;
+		}
+	}
+	return setSize;
 }
 
 //needs to be reworked into a descriptive intersection kernel
@@ -433,21 +517,20 @@ int main(void) {
 	desc_inter_h[20] =	3;
 	desc_inter_h[21] =	2;
 
-	//dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, p_desc_jaccard_dist<float>, intersectionSize);
-	//dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
+	cout << "Testing setDifferenceOfFamilies and getFamilyCardinality methods..." << endl;
 
 	float* d_A;
 	float* d_B;
-	float* family_A_less_A = new float[12];
-	float* family_A_less_B = new float[12];
-	float* family_B_less_C = new float[12];
+	float* family_A_less_A = new float[size];
+	float* family_A_less_B = new float[size];
+	float* family_B_less_C = new float[size];
 	float* d_output;
 
-	cudaMalloc((void**)&d_A, sizeof(float) * 12);
-	cudaMalloc((void**)&d_B, sizeof(float) * 12);
-	cudaMalloc((void**)&d_output, sizeof(float) * 12);
-	cudaMemcpy(d_A, family_A, sizeof(float) * 12, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, family_A, sizeof(float) * 12, cudaMemcpyHostToDevice);
+	CUDA_CHECK_RETURN(cudaMalloc((void**)&d_A, sizeof(float) * size));
+	CUDA_CHECK_RETURN(cudaMalloc((void**)&d_B, sizeof(float) * size));
+	CUDA_CHECK_RETURN(cudaMalloc((void**)&d_output, sizeof(float) * size));
+	CUDA_CHECK_RETURN(cudaMemcpy(d_A, family_A, sizeof(float) * size, cudaMemcpyHostToDevice));
+	CUDA_CHECK_RETURN(cudaMemcpy(d_B, family_A, sizeof(float) * size, cudaMemcpyHostToDevice));
 
 	unsigned subsetSize = VECTOR_SIZE * VECTORS_PER_SUBSET;
 
@@ -462,13 +545,16 @@ int main(void) {
 		minFloat
 	);
 
-	cudaMemcpy(family_A_less_A, d_output, sizeof(float) * 12, cudaMemcpyDeviceToHost);
+	CUDA_CHECK_RETURN(cudaMemcpy(family_A_less_A, d_output, sizeof(float) * size, cudaMemcpyDeviceToHost));
 
-	for (unsigned i = 0; i < 12; i++) {
+	cout << "\n|family_A_less_A| = " << getFamilyCardinality(family_A_less_A, size) << " (Should be 0)\n" << endl;
+
+	for (unsigned i = 0; i < size; i++) {
 		cout << "family_A_less_A[" << i << "]=" << family_A_less_A[i] << endl;
 	}
 
-	cudaMemcpy(d_B, family_B, sizeof(float) * 12, cudaMemcpyHostToDevice);
+	CUDA_CHECK_RETURN(cudaMemcpy(d_B, family_B, sizeof(float) * size, cudaMemcpyHostToDevice));
+
 	setDifferenceOfFamilies << <1, 2 >> > (
 		d_A,
 		d_B,
@@ -477,16 +563,19 @@ int main(void) {
 		VECTORS_PER_SUBSET,
 		VECTOR_SIZE,
 		minFloat
-		);
+	);
 
-	cudaMemcpy(family_A_less_B, d_output, sizeof(float) * 12, cudaMemcpyDeviceToHost);
+	CUDA_CHECK_RETURN(cudaMemcpy(family_A_less_B, d_output, sizeof(float) * size, cudaMemcpyDeviceToHost));
 
-	for (unsigned i = 0; i < 12; i++) {
+	cout << "\n|family_A_less_B| = " << getFamilyCardinality(family_A_less_B, size) << " (Should be 2)\n" << endl;
+
+	for (unsigned i = 0; i < size; i++) {
 		cout << "family_A_less_B[" << i << "]=" << family_A_less_B[i] << endl;
 	}
 
-	cudaMemcpy(d_A, family_B, sizeof(float) * 12, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, family_C, sizeof(float) * 12, cudaMemcpyHostToDevice);
+	CUDA_CHECK_RETURN(cudaMemcpy(d_A, family_B, sizeof(float) * size, cudaMemcpyHostToDevice));
+	CUDA_CHECK_RETURN(cudaMemcpy(d_B, family_C, sizeof(float) * size, cudaMemcpyHostToDevice));
+	
 	setDifferenceOfFamilies << <1, 2 >> > (
 		d_A,
 		d_B,
@@ -495,13 +584,25 @@ int main(void) {
 		VECTORS_PER_SUBSET,
 		VECTOR_SIZE,
 		minFloat
-		);
+	);
 
-	cudaMemcpy(family_B_less_C, d_output, sizeof(float) * 12, cudaMemcpyDeviceToHost);
+	CUDA_CHECK_RETURN(cudaMemcpy(family_B_less_C, d_output, sizeof(float) * size, cudaMemcpyDeviceToHost));
 
-	for (unsigned i = 0; i < 12; i++) {
+	cout << "\n|family_B_less_C| = " << getFamilyCardinality(family_B_less_C, size) << " (Should be 1)\n" << endl;
+
+	for (unsigned i = 0; i < size; i++) {
 		cout << "family_B_less_C[" << i << "]=" << family_B_less_C[i] << endl;
 	}
+
+	cout << "\nTesting Complete!\n" << endl;
+
+	//dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, p_desc_jaccard_dist<float>, intersectionSize);
+	dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
+
+	CUDA_CHECK_RETURN(cudaFree((void*)d_A));
+	CUDA_CHECK_RETURN(cudaFree((void*)d_B));
+	CUDA_CHECK_RETURN(cudaFree((void*)d_output));
+	CUDA_CHECK_RETURN(cudaDeviceReset());
 
 	return 0;
 }
