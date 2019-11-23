@@ -32,7 +32,6 @@ unsigned SUBSETS_PER_FAMILY = F_SUBSET_COUNT / 2;
 
 using namespace std;
 
-//instead of pointers to pointers, try pointers to arrays?
 template<typename T>
 using metric_t = T(*) (T*, T*, T*, unsigned, unsigned, unsigned, unsigned, float, unsigned, unsigned);
 
@@ -53,8 +52,8 @@ __device__ T desc_jaccard_dist(
 	float descriptiveIntersectionCardinality = 0.0f; 
 	float unionCardinality = 0.0f;
 	
-	//starting at index_B * size_A + index_A of the array containing all descriptive intersections (in row major layout), 
-	//get all the vectors that aren't minFloat
+	//starting at index_B * size_A + index_A of the array containing all descriptive intersections
+	//(in row major layout), get all the vectors that aren't minFloat
 	unsigned desc_intersections_index = index_A * 2 + index_B; //0,1,2,3
 	unsigned inputSetVectorOffset = desc_intersections_index * VECTOR_SIZE * VECTORS_PER_SUBSET; //0,6,12,18
 	unsigned inputAVectorOffset = index_A * VECTOR_SIZE * VECTORS_PER_SUBSET;
@@ -68,37 +67,6 @@ __device__ T desc_jaccard_dist(
 	}
 
 	unionCardinality = maxUnionSize - descriptiveIntersectionCardinality;
-	////get the number of vectors in the description of A
-	//for (int i = 0; i < size_A; i += VECTOR_SIZE) {
-	//	if (A_desc[inputAVectorOffset + i] != minFloat) {
-	//		unionCardinality += 1.0f;
-	//	}
-	//}
-
-	////get the number of vectors in the description of B, not in A
-	//for (int i = 0; i < size_B; i += VECTOR_SIZE) {
-	//	//for every vector in B's description that's not the initilized minFloat
-	//	if (B_desc[inputBVectorOffset + i] != minFloat) {
-	//		bool isUnique = true;
-	//		for (int j = 0; isUnique && j < size_A; j += VECTOR_SIZE) {
-	//			bool termIsRepeated = true;
-	//			//Check it against every term of the vector in the description of A
-	//			for (int k = 0; termIsRepeated && k < VECTOR_SIZE; k++) {
-	//				if (B_desc[inputBVectorOffset + i + k] != A_desc[inputAVectorOffset + j + k]) {
-	//					termIsRepeated = false;
-	//				}
-	//			}
-	//			if (termIsRepeated) {
-	//				isUnique = false;
-	//			}
-	//		}
-	//		if (isUnique) {
-	//			unionCardinality += 1.0f;
-	//		}
-	//	}	
-	//}
-	//return descriptiveIntersectionCardinality;
-	//return unionCardinality;
 	return (1.0f - descriptiveIntersectionCardinality / unionCardinality);
 }
 
@@ -364,13 +332,16 @@ unsigned getFamilyCardinality(float* input, unsigned size) {
 	while(index < setSize) {
 		//if we encounter a subset with a vector that starts with minFloat
 		//swap the subsets with the row-major index of our final subset based on our running setSize
-		//decrease the set size if this is the case (we have a 'nulled' out subset from set difference on the families)
+		//decrease the set size if this is the case (we have a 'nulled'
+		//out subset from set difference on the families)
 		if (input[index * VECTOR_SIZE * VECTORS_PER_SUBSET] == minFloat) {
 			for (int i = 0; i < VECTOR_SIZE * VECTORS_PER_SUBSET; i++) {
 				float temp = input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i];
-				input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i] 
-					= input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - ((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)];
-				input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - ((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)] = temp;
+				input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i] =
+					input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - 
+						((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)];
+				input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - 
+					((VECTOR_SIZE * VECTORS_PER_SUBSET) - i)] = temp;
 			}
 			setSize--;
 		} else {
@@ -386,19 +357,16 @@ __global__ void descriptiveIntersectionGPU(
 	float* d_output,
 	unsigned size,
 	float minFloat,
-	unsigned SUBSETS_PER_FAMILY,	//2
-	unsigned VECTORS_PER_SUBSET,	//3
-	unsigned VECTOR_SIZE			//2
+	unsigned SUBSETS_PER_FAMILY,
+	unsigned VECTORS_PER_SUBSET,
+	unsigned VECTOR_SIZE
 ) {
 	
 	extern __shared__ float shared[];
 
 	float* ds_A = &shared[0];
-	float* ds_B = &shared[size];// SUBSETS_PER_FAMILY* VECTORS_PER_SUBSET* VECTOR_SIZE];
+	float* ds_B = &shared[size];
 
-	//0,1,2 = 0
-	//3,4,5 = 1
-	//etc...
 	unsigned vectorInFamily = blockIdx.x * blockDim.x + threadIdx.x;
 	unsigned setSubscript = floorf((float)vectorInFamily / VECTORS_PER_SUBSET);
 
@@ -430,18 +398,14 @@ __global__ void descriptiveIntersectionGPU(
 			}
 			for (unsigned j = 0; j < VECTOR_SIZE; j++) {
 				if (vectorIsInSubset) {
-					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) +			//[0,1] * 6 = {0,6}
-						(vectorInFamily * VECTOR_SIZE) +						//[0,5] * 2 = {0,2,4,6,8,10}
-						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) +		//[0,1] * 6 = {0,6}
-						j] =													//{0,1} =	  {0,1}
-						ds_A[vectorInFamily * VECTOR_SIZE + j];
+					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) + (vectorInFamily * VECTOR_SIZE) +
+						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) +j] =													
+							ds_A[vectorInFamily * VECTOR_SIZE + j];
 				}
 				else {
-					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) +			//[0,1] * 6 = {0,6}
-						(vectorInFamily * VECTOR_SIZE) +						//[0,5] * 2 = {0,2,4,6,8,10}
-						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) +		//[0,1] * 6 = {0,6}
-						j] =													//{0,1} =	  {0,1}
-						minFloat;
+					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) + (vectorInFamily * VECTOR_SIZE) +
+						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) + j] =													
+							minFloat;
 				}
 			}
 		}
@@ -560,7 +524,8 @@ int main(void) {
 		VECTOR_SIZE
 		);
 
-	CUDA_CHECK_RETURN(cudaMemcpy(desc_inter_output, desc_inter_d, sizeof(float) * intersectionSize, cudaMemcpyDeviceToHost));
+	CUDA_CHECK_RETURN(cudaMemcpy(desc_inter_output, desc_inter_d, 
+		sizeof(float) * intersectionSize, cudaMemcpyDeviceToHost));
 
 	cout << "Testing descriptiveIntersectionGPU kernel..." << endl;
 	bool descriptiveIntersectionGPUTestPass = true;
@@ -568,7 +533,8 @@ int main(void) {
 		if (desc_inter_output[i] != desc_inter_h[i]) {
 			descriptiveIntersectionGPUTestPass = false;
 		}
-		cout << "desc_int[" << i << "] = \t" << desc_inter_output[i] << "\t\t(Should be " << desc_inter_h[i] << ")" << endl;
+		cout << "desc_int[" << i << "] = \t" << desc_inter_output[i] << 
+			"\t\t(Should be " << desc_inter_h[i] << ")" << endl;
 	}
 	if (descriptiveIntersectionGPUTestPass) {
 		cout << "descriptiveIntersectionGPU kernel test passed!" << endl;
@@ -622,7 +588,8 @@ int main(void) {
 
 	//CUDA_CHECK_RETURN(cudaMemcpy(family_A_less_B, d_output, sizeof(float) * size, cudaMemcpyDeviceToHost));
 
-	//cout << "\n|family_A_less_B| = " << getFamilyCardinality(family_A_less_B, size) << " (Should be 2)\n" << endl;
+	//cout << "\n|family_A_less_B| = " << getFamilyCardinality(family_A_less_B, size) 
+	//	<< " (Should be 2)\n" << endl;
 
 	//for (unsigned i = 0; i < size; i++) {
 	//	cout << "family_A_less_B[" << i << "]=" << family_A_less_B[i] << endl;
@@ -643,7 +610,8 @@ int main(void) {
 
 	//CUDA_CHECK_RETURN(cudaMemcpy(family_B_less_C, d_output, sizeof(float) * size, cudaMemcpyDeviceToHost));
 
-	//cout << "\n|family_B_less_C| = " << getFamilyCardinality(family_B_less_C, size) << " (Should be 1)\n" << endl;
+	//cout << "\n|family_B_less_C| = " << getFamilyCardinality(family_B_less_C, size) 
+	//	<< " (Should be 1)\n" << endl;
 
 	//for (unsigned i = 0; i < size; i++) {
 	//	cout << "family_B_less_C[" << i << "]=" << family_B_less_C[i] << endl;
@@ -651,7 +619,7 @@ int main(void) {
 
 	//cout << "\nTesting Complete!\n" << endl;
 
-	////dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, p_desc_jaccard_dist<float>, intersectionSize);
+	//dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, p_desc_jaccard_dist<float>, intersectionSize);
 	dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
 
 	/*CUDA_CHECK_RETURN(cudaFree((void*)d_A));
