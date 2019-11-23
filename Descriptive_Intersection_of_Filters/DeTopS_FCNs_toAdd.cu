@@ -59,6 +59,7 @@ __device__ T desc_jaccard_dist(
 	unsigned inputSetVectorOffset = desc_intersections_index * VECTOR_SIZE * VECTORS_PER_SUBSET; //0,6,12,18
 	unsigned inputAVectorOffset = index_A * VECTOR_SIZE * VECTORS_PER_SUBSET;
 	unsigned inputBVectorOffset = index_B * VECTOR_SIZE * VECTORS_PER_SUBSET;
+	float maxUnionSize = VECTORS_PER_SUBSET * 2;
 
 	for (int i = 0; i < size_A; i += VECTOR_SIZE) { 
 		if (desc_intersection[inputSetVectorOffset + i] != minFloat) {
@@ -66,35 +67,36 @@ __device__ T desc_jaccard_dist(
 		}
 	}
 
-	//get the number of vectors in the description of A
-	for (int i = 0; i < size_A; i += VECTOR_SIZE) {
-		if (A_desc[inputAVectorOffset + i] != minFloat) {
-			unionCardinality += 1.0f;
-		}
-	}
+	unionCardinality = maxUnionSize - descriptiveIntersectionCardinality;
+	////get the number of vectors in the description of A
+	//for (int i = 0; i < size_A; i += VECTOR_SIZE) {
+	//	if (A_desc[inputAVectorOffset + i] != minFloat) {
+	//		unionCardinality += 1.0f;
+	//	}
+	//}
 
-	//get the number of vectors in the description of B, not in A
-	for (int i = 0; i < size_B; i += VECTOR_SIZE) {
-		//for every vector in B's description that's not the initilized minFloat
-		if (B_desc[inputBVectorOffset + i] != minFloat) {
-			bool isUnique = true;
-			for (int j = 0; isUnique && j < size_A; j += VECTOR_SIZE) {
-				bool termIsRepeated = true;
-				//Check it against every term of the vector in the description of A
-				for (int k = 0; termIsRepeated && k < VECTOR_SIZE; k++) {
-					if (B_desc[inputBVectorOffset + i + k] != A_desc[inputAVectorOffset + j + k]) {
-						termIsRepeated = false;
-					}
-				}
-				if (termIsRepeated) {
-					isUnique = false;
-				}
-			}
-			if (isUnique) {
-				unionCardinality += 1.0f;
-			}
-		}	
-	}
+	////get the number of vectors in the description of B, not in A
+	//for (int i = 0; i < size_B; i += VECTOR_SIZE) {
+	//	//for every vector in B's description that's not the initilized minFloat
+	//	if (B_desc[inputBVectorOffset + i] != minFloat) {
+	//		bool isUnique = true;
+	//		for (int j = 0; isUnique && j < size_A; j += VECTOR_SIZE) {
+	//			bool termIsRepeated = true;
+	//			//Check it against every term of the vector in the description of A
+	//			for (int k = 0; termIsRepeated && k < VECTOR_SIZE; k++) {
+	//				if (B_desc[inputBVectorOffset + i + k] != A_desc[inputAVectorOffset + j + k]) {
+	//					termIsRepeated = false;
+	//				}
+	//			}
+	//			if (termIsRepeated) {
+	//				isUnique = false;
+	//			}
+	//		}
+	//		if (isUnique) {
+	//			unionCardinality += 1.0f;
+	//		}
+	//	}	
+	//}
 	//return descriptiveIntersectionCardinality;
 	//return unionCardinality;
 	return (1.0f - descriptiveIntersectionCardinality / unionCardinality);
@@ -259,7 +261,8 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 		cout << "h_result1[" << i << "]=" << h_result[i] << endl;
 		result1 += h_result[i];
 	}
-	result1 /= ((F_SUBSET_COUNT / 2) * sizeOfFamilyBLessA);
+	//TODO: GET CARDINALITY OF UNION OF BOTH FAMILIES
+	result1 /= ((F_SUBSET_COUNT / 2) * 4);
 
 	runMetricOnGPU<T> << <jaccardGrid, jaccardBlock >> > (
 		d_metric,
@@ -278,11 +281,11 @@ void dIteratedPseudometric(T* family_A, T* family_B, T* desc_intersection, unsig
 		cout << "h_result2[" << i << "]=" << h_result[i] << endl;
 		result2 += h_result[i];
 	}
-	result2 /= ((F_SUBSET_COUNT / 2) * sizeOfFamilyALessB);
+	result2 /= ((F_SUBSET_COUNT / 2) * 4);
 
 	T result = result1 + result2;
 
-	cout << "d Iterated Pseudometric Distance: " << result << " (Should be 1.2)" << endl;
+	cout << "d Iterated Pseudometric Distance: " << result << " (Should be 0.575)" << endl;
 }
 
 void initNegative(float* data, unsigned size) {
@@ -377,59 +380,6 @@ unsigned getFamilyCardinality(float* input, unsigned size) {
 	return setSize;
 }
 
-////needs to be reworked into a descriptive intersection kernel
-//void getSetDescription(float* input, float* output, unsigned size) {
-//	
-//	//initialize the description as the minFloat
-//	initNegative(output, size);
-//
-//	//The first vector in input is trivially added to output
-//	for (unsigned i = 0; input[i] != minFloat && i < VECTOR_SIZE; i++) {
-//		output[i] = input[i];
-//	}
-//
-//	bool inputRemaining = true;
-//	unsigned outputIndex = VECTOR_SIZE;
-//	//For each vector in input after the first, check 
-//	for (unsigned i = 1; inputRemaining && i < size / VECTOR_SIZE; i++) {
-//		bool isUnique = true;
-//		if (input[i*VECTOR_SIZE] == minFloat) {
-//			inputRemaining = false;
-//		}
-//		if (inputRemaining) {
-//			//check output array for repeated vector
-//			for (unsigned j = 0; j < outputIndex; j += VECTOR_SIZE) {
-//				bool isVectorPartiallyIdentical = true;
-//				for (unsigned k = 0; k < VECTOR_SIZE; k++) {
-//					if (input[i*VECTOR_SIZE + k] != output[j + k]) {
-//						isVectorPartiallyIdentical = false;
-//					}
-//				}
-//				if (isVectorPartiallyIdentical) {
-//					isUnique = false;
-//				}
-//			}
-//			//if it is unique, add it to output and increment index
-//			if (isUnique) {
-//				for (unsigned m = 0; m < VECTOR_SIZE; m++) {
-//					output[outputIndex + m] = input[i*VECTOR_SIZE + m];
-//				}
-//				outputIndex += outputIndex;
-//			}
-//		}
-//	}
-//
-//	////print input for debugging
-//	//for (int k = 0; k < size; k++) {
-//	//	cout << "in[" << k << "]= " << input[k] << endl;
-//	//}
-//
-//	////print out the description for debugging
-//	//for (int k = 0; k < size; k++) {
-//	//	cout << "desc[" << k << "]= " << output[k] << endl;
-//	//}
-//}
-
 __global__ void descriptiveIntersectionGPU(
 	float* d_A, 
 	float* d_B, 
@@ -446,61 +396,56 @@ __global__ void descriptiveIntersectionGPU(
 	float* ds_A = &shared[0];
 	float* ds_B = &shared[size];// SUBSETS_PER_FAMILY* VECTORS_PER_SUBSET* VECTOR_SIZE];
 
-	int bx = blockIdx.x;
-	int by = blockIdx.y;
-	int tx = threadIdx.x;
-	int ty = threadIdx.y;
-
 	//0,1,2 = 0
 	//3,4,5 = 1
 	//etc...
-	unsigned vectorInSubsetOfA = by * blockDim.y + ty;	//vector starting index in set in family A subscript
-	unsigned vectorInSubsetOfB = bx * blockDim.x + tx;	//vector starting index in set in family B subscript
-
-	unsigned setASubscript = floorf((float) vectorInSubsetOfA / VECTORS_PER_SUBSET);
-	unsigned setBSubscript = floorf((float) vectorInSubsetOfB / VECTORS_PER_SUBSET);
+	unsigned vectorInFamily = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned setSubscript = floorf((float)vectorInFamily / VECTORS_PER_SUBSET);
 
 	//Load into Shared Memory
-	for (int i = 0; i < VECTOR_SIZE; i++) {
-		ds_A[vectorInSubsetOfA * VECTOR_SIZE + i] = d_A[vectorInSubsetOfA * VECTOR_SIZE + i];
-		ds_B[vectorInSubsetOfB * VECTOR_SIZE + i] = d_B[vectorInSubsetOfB * VECTOR_SIZE + i];
+	for (unsigned i = 0; i < VECTOR_SIZE; i++) {
+		ds_A[vectorInFamily * VECTOR_SIZE + i] = d_A[vectorInFamily * VECTOR_SIZE + i];
+		ds_B[vectorInFamily * VECTOR_SIZE + i] = d_B[vectorInFamily * VECTOR_SIZE + i];
 	}
 	__syncthreads();
 
 	//Perform Intersections
-	//for each vector in subset of B with specified index...
-	bool vectorIsInSubsetOfB = false;
-	for (int i = 0; !vectorIsInSubsetOfB && i < VECTORS_PER_SUBSET; i++) {
-		bool vectorsMatch = true;
-		for (int j = 0; vectorsMatch && j < VECTOR_SIZE; j++) {
-			//we'll check out thread-associated vector
-			//from the subset of A with the specified index
-			if (ds_B[(setBSubscript * VECTORS_PER_SUBSET * VECTOR_SIZE) + (i * VECTOR_SIZE) + j]
-				!= ds_A[(vectorInSubsetOfA * VECTOR_SIZE) + j]) {
-				//if it's not found in B_x, skip to next vector in subset of B_x
-					vectorsMatch = false;
+	//for each subset in B...
+	if (vectorInFamily < SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET) {
+		for (unsigned i = 0; i < SUBSETS_PER_FAMILY; i++) {
+			//for each vector in subset of B...
+			bool vectorIsInSubset = false;
+			for (unsigned j = 0; !vectorIsInSubset && j < VECTORS_PER_SUBSET; j++) {
+				bool vectorsMatch = true;
+				for (unsigned k = 0; vectorsMatch && k < VECTOR_SIZE; k++) {
+					if (ds_B[i * VECTORS_PER_SUBSET * VECTOR_SIZE + j * VECTOR_SIZE + k] !=
+						ds_A[vectorInFamily * VECTOR_SIZE + k] ) {
+							vectorsMatch = false;
+					}
+				}
+				//if the vector is found within subset, don't check the rest of the subset
+				if (vectorsMatch) {
+					vectorIsInSubset = true;
+				}
 			}
-		}
-		if (vectorsMatch) {
-			vectorIsInSubsetOfB = true;
+			for (unsigned j = 0; j < VECTOR_SIZE; j++) {
+				if (vectorIsInSubset) {
+					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) +			//[0,1] * 6 = {0,6}
+						(vectorInFamily * VECTOR_SIZE) +						//[0,5] * 2 = {0,2,4,6,8,10}
+						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) +		//[0,1] * 6 = {0,6}
+						j] =													//{0,1} =	  {0,1}
+						ds_A[vectorInFamily * VECTOR_SIZE + j];
+				}
+				else {
+					d_output[(i * VECTOR_SIZE * VECTORS_PER_SUBSET) +			//[0,1] * 6 = {0,6}
+						(vectorInFamily * VECTOR_SIZE) +						//[0,5] * 2 = {0,2,4,6,8,10}
+						(setSubscript * (SUBSETS_PER_FAMILY - 1) * VECTOR_SIZE * VECTORS_PER_SUBSET) +		//[0,1] * 6 = {0,6}
+						j] =													//{0,1} =	  {0,1}
+						minFloat;
+				}
+			}
 		}
 	}
-
-	//write to output array
-	//if (setASubscript < SUBSETS_PER_FAMILY && setBSubscript < SUBSETS_PER_FAMILY) {
-		for (int i = 0; i < VECTOR_SIZE; i++) {
-			if (vectorIsInSubsetOfB) {
-				d_output[(setASubscript * SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET * VECTOR_SIZE) +
-					//(setBSubscript * VECTORS_PER_SUBSET * VECTOR_SIZE) + i] = ds_A[vectorInSubsetOfA * VECTOR_SIZE + i];
-					(vectorInSubsetOfA * VECTOR_SIZE) + i] = ds_A[vectorInSubsetOfA * VECTOR_SIZE + i];
-			}		//
-			else {//[0..1](2*3*2) = (0,12)	[0..1](3*2)	//[0..5](2) = (0,2,4,6,8,10)
-				d_output[(setASubscript * SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET * VECTOR_SIZE) +
-					//(setBSubscript * VECTORS_PER_SUBSET * VECTOR_SIZE) + i] = minFloat;
-					(vectorInSubsetOfA * VECTOR_SIZE) + i] = minFloat;
-			}
-		}
-	//}
 }
 
 int main(void) {
@@ -544,25 +489,25 @@ int main(void) {
 	family_B[6] = 2;
 	family_B[7] = 1;
 	family_B[8] = 3;
-	family_B[9] = 3;
+	family_B[9] = 2;
 	family_B[10] = 4;
 	family_B[11] = 3;
 
 	float* family_C = new float[size];
 	//first set
-	family_C[0] = 2;
-	family_C[1] = 1;
+	family_C[0] = 4;
+	family_C[1] = 3;
 	family_C[2] = 3;
-	family_C[3] = 3;
+	family_C[3] = 0;
 	family_C[4] = 3;
-	family_C[5] = 2;
+	family_C[5] = 3;
 	//second set
-	family_C[6] = 4;
-	family_C[7] = 3;
-	family_C[8] = 2;
-	family_C[9] = 1;
-	family_C[10] = 3;
-	family_C[11] = 3;
+	family_C[6] = 3;
+	family_C[7] = 1;
+	family_C[8] = 3;
+	family_C[9] = 2;
+	family_C[10] = 4;
+	family_C[11] = 4;
 
 	//setup array for desc intersection kernel(?) <-- this should be done in template
 	//Hard coding intersections for now
@@ -572,17 +517,21 @@ int main(void) {
 
 	float* desc_inter_h = new float[intersectionSize];
 	initNegative(desc_inter_h, intersectionSize);
-
+	
+	//a0b0
 	desc_inter_h[0] = 2;
 	desc_inter_h[1] = 1;
 	desc_inter_h[2] = 3;
 	desc_inter_h[3] = 3;
+	//a0b1
 	desc_inter_h[6] = 2;
 	desc_inter_h[7] = 1;
 	desc_inter_h[8] = 3;
 	desc_inter_h[9] = 2;
+	//a1b0
 	desc_inter_h[12] = 2;
 	desc_inter_h[13] = 1;
+	//a1b1
 	desc_inter_h[18] = 2;
 	desc_inter_h[19] = 1;
 	desc_inter_h[20] = 3;
@@ -599,9 +548,8 @@ int main(void) {
 	CUDA_CHECK_RETURN(cudaMemcpy(d_A, family_A, sizeof(float) * size, cudaMemcpyHostToDevice));
 	CUDA_CHECK_RETURN(cudaMemcpy(d_B, family_B, sizeof(float) * size, cudaMemcpyHostToDevice));
 
-	unsigned numberOfVectorsPerSet = SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET;	//6
-	dim3 descInterBlockSize(numberOfVectorsPerSet, numberOfVectorsPerSet);
-	descriptiveIntersectionGPU << <1, descInterBlockSize, intersectionSize * sizeof(float) >> > (
+	unsigned numberOfVectorsPerFamily = SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET;	//6
+	descriptiveIntersectionGPU << <1, numberOfVectorsPerFamily, intersectionSize * sizeof(float) >> > (
 		d_A,
 		d_B,
 		desc_inter_d,
@@ -704,7 +652,7 @@ int main(void) {
 	//cout << "\nTesting Complete!\n" << endl;
 
 	////dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, p_desc_jaccard_dist<float>, intersectionSize);
-	//dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
+	dIteratedPseudometric<float>(family_A, family_B, desc_inter_h, intersectionSize);
 
 	/*CUDA_CHECK_RETURN(cudaFree((void*)d_A));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_B));

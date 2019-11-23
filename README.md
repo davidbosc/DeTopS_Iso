@@ -9,42 +9,29 @@ Consider the following families of sets, where each set contains a group of obje
 
 ![img](https://i.imgur.com/OkYXySc.png)
 
-We'll call the first subset X<sub>1</sub>, and the second X<sub>2</sub>, where X is the name of the family of sets.  By applying the function Φ to each set, we can obtain the following object descriptions for each set: 
+We'll call the first subset X1, and the second X2, where X is the name of the family of sets.  By applying the function Φ to each set, we can obtain the following object descriptions for each set: 
 
-Φ(A<sub>1</sub>) = { (2, 1), (3, 3), (3, 2) }
+Φ(A1) = { (2, 1), (3, 3), (3, 2) }
 
-Φ(A<sub>2</sub>) = { (1, 0), (3, 2), (2, 1) }
+Φ(A2) = { (1, 0), (3, 2), (2, 1) }
 
-Φ(B<sub>1</sub>) = { (2, 1), (3, 3), (3, 0) }
+Φ(B1) = { (2, 1), (3, 3), (3, 0) }
 
-Φ(B<sub>2</sub>) = { (2, 1), (3, 2), (4, 3) }
+Φ(B2) = { (2, 1), (3, 2), (4, 3) }
 
-Φ(C<sub>1</sub>) = { (4, 3), (3, 0), (3, 3) }
+Φ(C1) = { (4, 3), (3, 0), (3, 3) }
 
-Φ(C<sub>2</sub>) = { (3, 1), (3, 2), (4, 4) }
+Φ(C2) = { (3, 1), (3, 2), (4, 4) }
 
 Next, we'll apply a metric on both families of sets.  The d-iterated pseudometric takes 2 sets of sets as imputs, and applies an embedded metric on those sets.  By using the analog of the [Jaccard Distance](https://en.wikipedia.org/wiki/Jaccard_index) extended to work with set descriptions, we obtain:
 
-Δ<sub>d<sub>J</sub></sub>(A,B) = 0.575 
+Δ<sub>d<sub>J</sub></sub>(A,B) = 1.2
 
-Δ<sub>d<sub>J</sub></sub>(A,C) = 0.85
+//TODO: work out solutions, add work done by hand, 
 
-Δ<sub>d<sub>J</sub></sub>(B,C) = 0.775
+Δ<sub>d<sub>J</sub></sub>(A,B) = ???
 
-Since Δ<sub>d<sub>J</sub></sub>(A,B) < Δ<sub>d<sub>J</sub></sub>(A,C) we can say A is descriptively nearer to B than C.
-
-Also, since Δ<sub>d<sub>J</sub></sub>(A,B) = Δ<sub>d<sub>J</sub></sub>(B,A) < Δ<sub>d<sub>J</sub></sub>(B,C) we can say B is descriptively nearer to A than C.
-
-Lastly, since Δ<sub>d<sub>J</sub></sub>(B,C) < Δ<sub>d<sub>J</sub></sub>(A,C) we can say C is descriptively nearer to B than A.
-
+Since d(A,) < d(A,) we can say A is descriptively nearer to  than .
 
 ### Toy Example Work
 
-#### Jaccard Distance Calculations per Subset
-
-![img](https://i.imgur.com/SBgDjXu.png)
-
-
-#### d-iterated pseudometric per Family of Sets
-
-![img](https://i.imgur.com/cYfGs8m.png)
