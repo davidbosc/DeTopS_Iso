@@ -122,6 +122,7 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 	T* d_output;
 	unsigned sizeOfFamilyALessB;
 	unsigned sizeOfFamilyBLessA;
+	unsigned sizeOfFamilyAUnionFamilyB;
 
 	unsigned numberOfVectorsPerFamily = SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET;
 	unsigned intersectionSize = pow(SUBSETS_PER_FAMILY, 2) * VECTORS_PER_SUBSET * VECTOR_SIZE;
@@ -149,8 +150,6 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 
 	cudaMemcpy(h_family_A_less_B, d_output, sizeof(T) * sizeOfSets, cudaMemcpyDeviceToHost);
 
-	sizeOfFamilyALessB = getFamilyCardinality(h_family_A_less_B, sizeOfSets);
-
 	//TODO: Fix kernel parameters
 	setDifferenceOfFamilies << <1, sizeOfSets >> > (
 		d_B,
@@ -164,7 +163,18 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 
 	cudaMemcpy(h_family_B_less_A, d_output, sizeof(T) * sizeOfSets, cudaMemcpyDeviceToHost);
 
+	sizeOfFamilyALessB = getFamilyCardinality(h_family_A_less_B, sizeOfSets);
 	sizeOfFamilyBLessA = getFamilyCardinality(h_family_B_less_A, sizeOfSets);
+
+	if (sizeOfFamilyALessB == SUBSETS_PER_FAMILY && sizeOfFamilyBLessA == SUBSETS_PER_FAMILY) {
+		//If the families A and B are disjoint, then the cardinality of their union 
+		//is the sum of their cardinalities
+		sizeOfFamilyAUnionFamilyB = 2 * SUBSETS_PER_FAMILY;
+	}
+	else {
+		//Otherwise, take the cardinality of B, and sum it with the cardinality of A less B 
+		sizeOfFamilyAUnionFamilyB = SUBSETS_PER_FAMILY + sizeOfFamilyALessB;
+	}
 
 	//allocate to device
 	cudaMalloc((void**)&d_A, sizeof(T) * sizeOfSets);
@@ -229,7 +239,7 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 		result1 += h_result[i];
 	}
 	//TODO: GET CARDINALITY OF UNION OF BOTH FAMILIES
-	result1 /= ((F_SUBSET_COUNT / 2) * 4);
+	result1 /= (SUBSETS_PER_FAMILY * sizeOfFamilyAUnionFamilyB);
 
 	descriptiveIntersectionGPU << <1, numberOfVectorsPerFamily, intersectionSize * sizeof(float) >> > (
 		d_family_A_less_B,
@@ -260,7 +270,7 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 		//cout << "h_result2[" << i << "]=" << h_result[i] << endl;
 		result2 += h_result[i];
 	}
-	result2 /= ((F_SUBSET_COUNT / 2) * 4);
+	result2 /= (SUBSETS_PER_FAMILY * sizeOfFamilyAUnionFamilyB);
 
 	T result = result1 + result2;
 
