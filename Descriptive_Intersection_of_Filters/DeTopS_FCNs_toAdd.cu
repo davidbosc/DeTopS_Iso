@@ -56,8 +56,7 @@ __device__ T desc_jaccard_dist(
 	//(in row major layout), get all the vectors that aren't minFloat
 	unsigned desc_intersections_index = index_A * 2 + index_B; //0,1,2,3
 	unsigned inputSetVectorOffset = desc_intersections_index * VECTOR_SIZE * VECTORS_PER_SUBSET; //0,6,12,18
-	unsigned inputAVectorOffset = index_A * VECTOR_SIZE * VECTORS_PER_SUBSET;
-	unsigned inputBVectorOffset = index_B * VECTOR_SIZE * VECTORS_PER_SUBSET;
+	
 	float maxUnionSize = VECTORS_PER_SUBSET * 2;
 
 	for (int i = 0; i < size_A; i += VECTOR_SIZE) { 
@@ -70,8 +69,80 @@ __device__ T desc_jaccard_dist(
 	return (1.0f - descriptiveIntersectionCardinality / unionCardinality);
 }
 
+template<typename T>
+__device__ T desc_hausdorff_dist(
+	T* A_desc,
+	T* B_desc,
+	T* desc_intersection,	//unused
+	unsigned index_A,
+	unsigned index_B,
+	unsigned size_A,		//unused
+	unsigned size_B,		//unused
+	float minFloat,
+	unsigned VECTOR_SIZE,
+	unsigned VECTORS_PER_SUBSET
+) {
+	unsigned* distanceBetweenEachVector = new unsigned[VECTORS_PER_SUBSET * VECTORS_PER_SUBSET];
+	unsigned* minOfCols = new unsigned[VECTORS_PER_SUBSET];
+	unsigned* minOfRows = new unsigned[VECTORS_PER_SUBSET];
+
+	unsigned subsetAIndex = index_A * VECTOR_SIZE * VECTORS_PER_SUBSET;
+	unsigned subsetBIndex = index_B * VECTOR_SIZE * VECTORS_PER_SUBSET;
+
+	//Build a matrix of distances
+	//for each a in A_y
+	for (unsigned i = 0; i < VECTORS_PER_SUBSET; i++) {
+		//take the distance with each b in B_x
+		for (unsigned j = 0; j < VECTORS_PER_SUBSET; j++) {
+			//embedded distance function (hard coded for now)
+			unsigned distance = 0;
+			for (unsigned k = 0; k < VECTOR_SIZE; k++) {
+				if (A_desc[subsetAIndex + j * VECTOR_SIZE + k] != B_desc[subsetBIndex + i * VECTOR_SIZE + k]) {
+					distance++;
+				}
+			}
+			distanceBetweenEachVector[i * VECTORS_PER_SUBSET + j] = distance;
+		}
+	}
+
+	//Find the min of each row and column
+	//for each col
+	for (unsigned i = 0; i < VECTORS_PER_SUBSET; i++) {
+		//go through each row and find the min
+		//0,1,2
+		unsigned minOfCol = distanceBetweenEachVector[i];
+		//0,3,6
+		unsigned minOfRow = distanceBetweenEachVector[i * VECTORS_PER_SUBSET];
+		for (unsigned j = 1; j < VECTORS_PER_SUBSET; j++) {
+			//+ 3,6
+			minOfCol = minOfCol < distanceBetweenEachVector[j * VECTORS_PER_SUBSET + i] ?
+				 minOfCol : distanceBetweenEachVector[j * VECTORS_PER_SUBSET + i];
+			minOfCols[i] = minOfCol;
+			//+ 1,2
+			minOfRow = minOfRow < distanceBetweenEachVector[i * VECTORS_PER_SUBSET + j] ?
+				 minOfRow : distanceBetweenEachVector[i * VECTORS_PER_SUBSET + j];
+			minOfRows[i] = minOfRow;
+		}
+	}
+
+	//Find the max
+	unsigned maxOfMinCols = minOfCols[0];
+	unsigned maxOfMinRows = minOfRows[0];
+	for (int i = 1; i < VECTORS_PER_SUBSET; i++) {
+		maxOfMinCols = max(maxOfMinCols, minOfCols[i]);
+		maxOfMinRows = max(maxOfMinRows, minOfRows[i]);
+	}
+
+	//return the max of those max's
+
+	return max(maxOfMinCols, maxOfMinRows);
+}
+
 template <typename T>
 __device__ metric_t<T> p_desc_jaccard_dist = desc_jaccard_dist<T>;
+
+template <typename T>
+__device__ metric_t<T> p_desc_hausdorff_dist = desc_hausdorff_dist<T>;
 
 template <typename T>
 __global__ void runMetricOnGPU(
@@ -110,10 +181,9 @@ __global__ void runMetricOnGPU(
 
 //TODO: Utilize a lambda or template to call any metric with this function
 template <typename T>
-void dIteratedPseudometric(T* family_A, T* family_B) {
+void dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 
 	metric_t<T> d_metric;
-
 	T* d_A;
 	T* d_B;
 	T* d_inter;
@@ -170,6 +240,8 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 		//If the families A and B are disjoint, then the cardinality of their union 
 		//is the sum of their cardinalities
 		sizeOfFamilyAUnionFamilyB = 2 * SUBSETS_PER_FAMILY;
+		//TODO: Some shortcuts can be taken if disjoint:
+		//	- Only need to launch pair of kernels once, then double result
 	}
 	else {
 		//Otherwise, take the cardinality of B, and sum it with the cardinality of A less B 
@@ -196,7 +268,7 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 	cudaMalloc(&d_result, sizeof(T)*(F_SUBSET_COUNT* F_SUBSET_COUNT / 4));
 
 	// Copy device function pointer to host side
-	cudaMemcpyFromSymbol(&d_metric, p_desc_jaccard_dist<T>, sizeof(metric_t<T>));
+	cudaMemcpyFromSymbol(&d_metric, *metric, sizeof(metric_t<T>));
 
 	//TODO: The below code is causing issues when passing a metric_t<T> as an arguement; try a lambda?
 	//cudaMemcpy(d_metric, metric, sizeof(metric_t<T>), cudaMemcpyHostToDevice);
@@ -276,13 +348,14 @@ void dIteratedPseudometric(T* family_A, T* family_B) {
 
 	cout << "d Iterated Pseudometric Distance: " << result << endl;
 
-	CUDA_CHECK_RETURN(cudaFree((void*)d_A));
+	/*CUDA_CHECK_RETURN(cudaFree((void*)d_A));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_B));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_inter));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_family_A_less_B));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_family_B_less_A));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_output));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_result));
+	CUDA_CHECK_RETURN(cudaFree((void*)d_metric));*/
 	CUDA_CHECK_RETURN(cudaDeviceReset());
 }
 
@@ -365,7 +438,7 @@ unsigned getFamilyCardinality(float* input, unsigned size) {
 		//decrease the set size if this is the case (we have a 'nulled'
 		//out subset from set difference on the families)
 		if (input[index * VECTOR_SIZE * VECTORS_PER_SUBSET] == minFloat) {
-			for (int i = 0; i < VECTOR_SIZE * VECTORS_PER_SUBSET; i++) {
+			for (unsigned i = 0; i < VECTOR_SIZE * VECTORS_PER_SUBSET; i++) {
 				float temp = input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i];
 				input[(index * VECTOR_SIZE * VECTORS_PER_SUBSET) + i] =
 					input[(setSize * VECTOR_SIZE * VECTORS_PER_SUBSET) - 
@@ -503,12 +576,13 @@ int main(void) {
 	family_C[10] = 4;
 	family_C[11] = 4;
 
-	//setup array for desc intersection kernel(?) <-- this should be done in template
+	dIteratedPseudometric<float>(family_A, family_B, &p_desc_jaccard_dist<float>);
+	dIteratedPseudometric<float>(family_A, family_C, &p_desc_jaccard_dist<float>);
+	dIteratedPseudometric<float>(family_B, family_C, &p_desc_jaccard_dist<float>);
 
-	//dIteratedPseudometric<float>(family_A, family_B, p_desc_jaccard_dist<float>);
-	dIteratedPseudometric<float>(family_A, family_B);
-	dIteratedPseudometric<float>(family_A, family_C);
-	dIteratedPseudometric<float>(family_B, family_C);
+	dIteratedPseudometric<float>(family_A, family_B, &p_desc_hausdorff_dist<float>);
+	dIteratedPseudometric<float>(family_A, family_C, &p_desc_hausdorff_dist<float>);
+	dIteratedPseudometric<float>(family_B, family_C, &p_desc_hausdorff_dist<float>);
 	
 	delete[] family_A;
 	delete[] family_B;
