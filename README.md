@@ -38,6 +38,24 @@ Also, since Δ<sub>d<sub>J</sub></sub>(A,B) = Δ<sub>d<sub>J</sub></sub>(B,A) < 
 Lastly, since Δ<sub>d<sub>J</sub></sub>(B,C) < Δ<sub>d<sub>J</sub></sub>(A,C) we can say C is descriptively nearer to B than A.
 
 
+We're not restricted to using Jaccard here, we can actual use any pseudometric with this d-iterated pseudometric.  By using the analog of the [Hausdorff Distance](https://en.wikipedia.org/wiki/Hausdorff_distance) extended to work with feature descriptions, we obtain the following equation:
+
+![img](https://i.imgur.com/5946xky.png)
+
+Note that the Hausdorff distance takes a metric to perform on the description of features.  Going forward, we'll use the Hamming Distance, treating each feature as a string and matching them on the i-th digits. From here, we can then obtain:
+
+Δ<sub>d<sub>H</sub></sub>(A,B) = 1.25 
+
+Δ<sub>d<sub>H</sub></sub>(A,C) = 2
+
+Δ<sub>d<sub>H</sub></sub>(B,C) = 1.75
+
+Since Δ<sub>d<sub>H</sub></sub>(A,B) < Δ<sub>d<sub>H</sub></sub>(A,C) we can say A is again, descriptively nearer to B than C.
+
+Also, since Δ<sub>d<sub>H</sub></sub>(A,B) = Δ<sub>d<sub>H</sub></sub>(B,A) < Δ<sub>d<sub>H</sub></sub>(B,C) we can say B is descriptively nearer to A than C.
+
+Lastly, since Δ<sub>d<sub>H</sub></sub>(B,C) < Δ<sub>d<sub>H</sub></sub>(A,C) we can say C is descriptively nearer to B than A.
+
 ### Toy Example Work
 
 #### Jaccard Distance Calculations per Subset
@@ -45,6 +63,26 @@ Lastly, since Δ<sub>d<sub>J</sub></sub>(B,C) < Δ<sub>d<sub>J</sub></sub>(A,C) 
 ![img](https://i.imgur.com/SBgDjXu.png)
 
 
-#### d-iterated pseudometric per Family of Sets
+#### d-iterated pseudometric per Family of Sets with Jaccard
 
 ![img](https://i.imgur.com/cYfGs8m.png)
+
+#### Hausdorff Distance (with Hamming Distance) Calculations per Subset
+
+![img](https://i.imgur.com/4ZnQQrS.png)
+
+![img](https://i.imgur.com/jj6ETND.png)
+
+![img](https://i.imgur.com/olGVSCF.png)
+
+![img](https://i.imgur.com/4Vt9FE1.png)
+
+b1c
+![img]()
+
+b2c
+![img]()
+
+#### d-iterated pseudometric per Family of Sets with Hausdorff
+
+![img](https://i.imgur.com/JnUVKXD.png)
