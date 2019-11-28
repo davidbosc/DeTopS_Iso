@@ -152,8 +152,10 @@ __device__ T descHausdorffDistance(
 	unsigned maxOfMinCols = minOfCols[0];
 	unsigned maxOfMinRows = minOfRows[0];
 	for (int i = 1; i < VECTORS_PER_SUBSET; i++) {
-		maxOfMinCols = max(maxOfMinCols, minOfCols[i]);
-		maxOfMinRows = max(maxOfMinRows, minOfRows[i]);
+		maxOfMinCols = maxOfMinCols > minOfCols[i] ?
+			maxOfMinCols : minOfCols[i];
+		maxOfMinRows = maxOfMinRows > minOfRows[i] ?
+			maxOfMinRows : minOfRows[i];
 	}
 
 	return max(maxOfMinCols, maxOfMinRows);
@@ -221,7 +223,6 @@ __global__ void runMetricOnGPU(
 	}
 }
 
-//TODO: Utilize a lambda or template to call any metric with this function
 template <typename T>
 T dIteratedPseudometric(
 	T* family_A,
@@ -518,12 +519,30 @@ __global__ void descriptiveIntersectionGPU(
 
 	unsigned vectorInFamily = blockIdx.x * blockDim.x + threadIdx.x;
 	unsigned setSubscript = floorf((float)vectorInFamily / VECTORS_PER_SUBSET);
+	unsigned numberOfVectorsToLoad = SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET;
 
-	//Load into Shared Memory
-	for (unsigned i = 0; i < VECTOR_SIZE; i++) {
-		ds_A[vectorInFamily * VECTOR_SIZE + i] = d_A[vectorInFamily * VECTOR_SIZE + i];
-		ds_B[vectorInFamily * VECTOR_SIZE + i] = d_B[vectorInFamily * VECTOR_SIZE + i];
+	//Load d_A into Shared Memory: each thread will only need access to the one element in d_A
+	if(vectorInFamily < numberOfVectorsToLoad) {
+		for (unsigned i = 0; i < VECTOR_SIZE; i++) {
+			ds_A[vectorInFamily * VECTOR_SIZE + i] = d_A[vectorInFamily * VECTOR_SIZE + i];
+		}
 	}
+
+	//Load d_B into Shared Memory: if out number of vectors exceeds the number of blocks,
+	//threads will have to load in mutliple vectors
+	unsigned numberOfVectorsInBToLoad = numberOfVectorsToLoad;
+	for (unsigned i = 0; numberOfVectorsInBToLoad > 0; i++) {
+		// (vector number + offset of unloaded vectors in B) % number of blocks * size of blocks
+		if((vectorInFamily + (i * blockDim.x)) % (gridDim.x * blockDim.x) 
+			< numberOfVectorsToLoad) {
+			for (unsigned j = 0; j < VECTOR_SIZE; j++) {
+				ds_B[((vectorInFamily + (i * blockDim.x)) % (gridDim.x * blockDim.x)) * VECTOR_SIZE + j] =
+					d_B[((vectorInFamily + (i * blockDim.x)) % (gridDim.x * blockDim.x)) * VECTOR_SIZE + j];
+			}
+		}
+		numberOfVectorsInBToLoad -= blockDim.x;
+	}
+
 	__syncthreads();
 
 	//Perform Intersections
