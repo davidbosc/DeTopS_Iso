@@ -77,11 +77,9 @@ Lastly, since Δ<sub>d<sub>H</sub></sub>(B,C) < Δ<sub>d<sub>H</sub></sub>(A,C) 
 
 ![img](https://i.imgur.com/4Vt9FE1.png)
 
-b1c
 ![img](https://i.imgur.com/cifSv6u.png)
 
-b2c
-![img](https://i.imgur.com/SlLvbqu.png)
+![img](https://i.imgur.com/J0ytO3E.png)
 
 #### d-iterated pseudometric per Family of Sets with Hausdorff
 
