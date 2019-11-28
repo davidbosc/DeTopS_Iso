@@ -33,10 +33,34 @@ unsigned SUBSETS_PER_FAMILY = F_SUBSET_COUNT / 2;
 using namespace std;
 
 template<typename T>
-using metric_t = T(*) (T*, T*, T*, unsigned, unsigned, unsigned, float, unsigned, unsigned);
+using metric_t = T(*) (T*, T*, unsigned, unsigned, unsigned, float);
 
 template<typename T>
-__device__ T desc_jaccard_dist(
+using pseudometric_t = T(*) (T*, T*, T*, unsigned, unsigned, unsigned, float, unsigned, unsigned, metric_t<T>);
+
+template<typename T>
+__device__ T vectorHammingDistance(
+	T* d_A,
+	T* d_B,
+	unsigned index_A,
+	unsigned index_B,
+	unsigned VECTOR_SIZE,
+	float minFloat
+) {
+	unsigned distance = 0;
+	for (unsigned k = 0; k < VECTOR_SIZE; k++) {
+		if (d_A[index_A + k] != minFloat &&
+			d_B[index_B + k] != minFloat) {
+			if (d_A[index_A + k] != d_B[index_B + k]) {
+				distance++;
+			}
+		}
+	}
+	return distance;
+}
+
+template<typename T>
+__device__ T descJaccardDistance(
 	T* A_desc, 
 	T* B_desc, 
 	T* desc_intersection, 
@@ -45,7 +69,8 @@ __device__ T desc_jaccard_dist(
 	unsigned size, 
 	float minFloat,
 	unsigned VECTOR_SIZE,
-	unsigned VECTORS_PER_SUBSET
+	unsigned VECTORS_PER_SUBSET,
+	metric_t<T> embeddedMetric
 ) {
 
 	float descriptiveIntersectionCardinality = 0.0f; 
@@ -69,7 +94,7 @@ __device__ T desc_jaccard_dist(
 }
 
 template<typename T>
-__device__ T desc_hausdorff_dist(
+__device__ T descHausdorffDistance(
 	T* A_desc,
 	T* B_desc,
 	T* desc_intersection,	//unused
@@ -78,7 +103,8 @@ __device__ T desc_hausdorff_dist(
 	unsigned size,			//unused
 	float minFloat,
 	unsigned VECTOR_SIZE,
-	unsigned VECTORS_PER_SUBSET
+	unsigned VECTORS_PER_SUBSET,
+	metric_t<T> embeddedMetric
 ) {
 	unsigned* distanceBetweenEachVector = new unsigned[VECTORS_PER_SUBSET * VECTORS_PER_SUBSET];
 	unsigned* minOfCols = new unsigned[VECTORS_PER_SUBSET];
@@ -93,15 +119,14 @@ __device__ T desc_hausdorff_dist(
 		//take the distance with each b in B_x
 		for (unsigned j = 0; j < VECTORS_PER_SUBSET; j++) {
 			//embedded distance function (hard coded for now)
-			unsigned distance = 0;
-			for (unsigned k = 0; k < VECTOR_SIZE; k++) {
-				if (A_desc[subsetAIndex + j * VECTOR_SIZE + k] != minFloat &&
-					B_desc[subsetBIndex + i * VECTOR_SIZE + k] != minFloat) {
-					if (A_desc[subsetAIndex + j * VECTOR_SIZE + k] != B_desc[subsetBIndex + i * VECTOR_SIZE + k]) {
-						distance++;
-					}
-				}
-			}
+			unsigned distance =	embeddedMetric(
+				A_desc,
+				B_desc,
+				subsetAIndex + j * VECTOR_SIZE,
+				subsetBIndex + i * VECTOR_SIZE,
+				VECTOR_SIZE,
+				minFloat
+			);
 			distanceBetweenEachVector[i * VECTORS_PER_SUBSET + j] = distance;
 		}
 	}
@@ -135,14 +160,20 @@ __device__ T desc_hausdorff_dist(
 }
 
 template <typename T>
-__device__ metric_t<T> p_desc_jaccard_dist = desc_jaccard_dist<T>;
+__device__ pseudometric_t<T> p_descJaccardDistance = descJaccardDistance<T>;
 
 template <typename T>
-__device__ metric_t<T> p_desc_hausdorff_dist = desc_hausdorff_dist<T>;
+__device__ pseudometric_t<T> p_descHausdorffDistance = descHausdorffDistance<T>;
+
+template <typename T>
+__device__ metric_t<T> p_no_embeddedMetric;
+
+template <typename T>
+__device__ metric_t<T> p_vectorHammingDistance = vectorHammingDistance<T>;
 
 template <typename T>
 __global__ void runMetricOnGPU(
-	metric_t<T> metric, 
+	pseudometric_t<T> pseudometric,
 	T* d_A, 
 	T* d_B,
 	T* d_inter, 
@@ -151,7 +182,8 @@ __global__ void runMetricOnGPU(
 	unsigned VECTOR_SIZE, 
 	unsigned VECTORS_PER_SUBSET,
 	unsigned SUBSETS_PER_FAMILY,
-	unsigned INTERSECTION_SM_OFFSET	
+	unsigned INTERSECTION_SM_OFFSET,
+	metric_t<T> embeddedMetric
 ) {
 	unsigned row = blockIdx.y * blockDim.y + threadIdx.y;
 	unsigned col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -174,7 +206,7 @@ __global__ void runMetricOnGPU(
 
 		__syncthreads();
 
-		result[row * VECTOR_SIZE + col] = (*metric)(
+		result[row * VECTOR_SIZE + col] = (*pseudometric)(
 			ds_A,
 			ds_B,
 			ds_inter,
@@ -183,16 +215,22 @@ __global__ void runMetricOnGPU(
 			size,
 			minFloat,
 			VECTOR_SIZE,
-			VECTORS_PER_SUBSET
+			VECTORS_PER_SUBSET,
+			embeddedMetric
 		);
 	}
 }
 
 //TODO: Utilize a lambda or template to call any metric with this function
 template <typename T>
-T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
-
-	metric_t<T> d_metric;
+T dIteratedPseudometric(
+	T* family_A,
+	T* family_B, 
+	pseudometric_t<T>* metric, 
+	metric_t<T>* embeddedMetric = &p_no_embeddedMetric<T>
+) {
+	pseudometric_t<T> d_metric;
+	metric_t<T> d_embeddedMetric;
 	T* d_A;
 	T* d_B;
 	T* d_inter;
@@ -202,23 +240,24 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 	unsigned sizeOfFamilyALessB;
 	unsigned sizeOfFamilyBLessA;
 	unsigned sizeOfFamilyAUnionFamilyB;
-
+	bool familiesAreDisjoint = true;
 	unsigned numberOfVectorsPerFamily = SUBSETS_PER_FAMILY * VECTORS_PER_SUBSET;
 	unsigned intersectionSize = pow(SUBSETS_PER_FAMILY, 2) * VECTORS_PER_SUBSET * VECTOR_SIZE;
-	unsigned sizeOfSets = VECTORS_PER_SUBSET * VECTOR_SIZE * (F_SUBSET_COUNT / 2);
+	unsigned indiciesPerSet = VECTORS_PER_SUBSET * VECTOR_SIZE * (F_SUBSET_COUNT / 2);
 	unsigned subsetSize = VECTOR_SIZE * VECTORS_PER_SUBSET;
-	unsigned metricSharedMemorySize = 2 * sizeOfSets + intersectionSize;
-	T* h_family_A_less_B = new T[sizeOfSets];
-	T* h_family_B_less_A = new T[sizeOfSets];
+	unsigned metricSharedMemorySize = 2 * indiciesPerSet + intersectionSize;
+	T* h_family_A_less_B = new T[indiciesPerSet];
+	T* h_family_B_less_A = new T[indiciesPerSet];
+	T result = 0;
 
-	cudaMalloc((void**)&d_A, sizeof(T) * sizeOfSets);
-	cudaMalloc((void**)&d_B, sizeof(T) * sizeOfSets);
-	cudaMalloc((void**)&d_output, sizeof(T) * sizeOfSets);
-	cudaMemcpy(d_A, family_A, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, family_B, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
+	cudaMalloc((void**)&d_A, sizeof(T) * indiciesPerSet);
+	cudaMalloc((void**)&d_B, sizeof(T) * indiciesPerSet);
+	cudaMalloc((void**)&d_output, sizeof(T) * indiciesPerSet);
+	cudaMemcpy(d_A, family_A, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, family_B, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
 
 	//TODO: fix kernel parameters
-	setDifferenceOfFamilies << <1, sizeOfSets >> > (
+	setDifferenceOfFamilies << <1, indiciesPerSet >> > (
 		d_A,
 		d_B,
 		d_output,
@@ -228,10 +267,10 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 		minFloat
 	);
 
-	cudaMemcpy(h_family_A_less_B, d_output, sizeof(T) * sizeOfSets, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_family_A_less_B, d_output, sizeof(T) * indiciesPerSet, cudaMemcpyDeviceToHost);
 
 	//TODO: Fix kernel parameters
-	setDifferenceOfFamilies << <1, sizeOfSets >> > (
+	setDifferenceOfFamilies << <1, indiciesPerSet >> > (
 		d_B,
 		d_A,
 		d_output,
@@ -241,33 +280,32 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 		minFloat
 	);
 
-	cudaMemcpy(h_family_B_less_A, d_output, sizeof(T) * sizeOfSets, cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_family_B_less_A, d_output, sizeof(T) * indiciesPerSet, cudaMemcpyDeviceToHost);
 
-	sizeOfFamilyALessB = getFamilyCardinality(h_family_A_less_B, sizeOfSets);
-	sizeOfFamilyBLessA = getFamilyCardinality(h_family_B_less_A, sizeOfSets);
+	sizeOfFamilyALessB = getFamilyCardinality(h_family_A_less_B, indiciesPerSet);
+	sizeOfFamilyBLessA = getFamilyCardinality(h_family_B_less_A, indiciesPerSet);
 	if (sizeOfFamilyALessB == SUBSETS_PER_FAMILY && sizeOfFamilyBLessA == SUBSETS_PER_FAMILY) {
 		//If the families A and B are disjoint, then the cardinality of their union 
 		//is the sum of their cardinalities
 		sizeOfFamilyAUnionFamilyB = 2 * SUBSETS_PER_FAMILY;
-		//TODO: Some shortcuts can be taken if disjoint:
-		//	- Only need to launch pair of kernels once, then double result
 	} else {
 		//Otherwise, take the cardinality of B, and sum it with the cardinality of A less B 
 		sizeOfFamilyAUnionFamilyB = SUBSETS_PER_FAMILY + sizeOfFamilyALessB;
+		familiesAreDisjoint = false;
 	}
 
 	//allocate to device
-	cudaMalloc((void**)&d_A, sizeof(T) * sizeOfSets);
-	cudaMalloc((void**)&d_B, sizeof(T) * sizeOfSets);
-	cudaMalloc((void**)&d_family_A_less_B, sizeof(T) * sizeOfSets);
-	cudaMalloc((void**)&d_family_B_less_A, sizeof(T) * sizeOfSets);
+	cudaMalloc((void**)&d_A, sizeof(T) * indiciesPerSet);
+	cudaMalloc((void**)&d_B, sizeof(T) * indiciesPerSet);
+	cudaMalloc((void**)&d_family_A_less_B, sizeof(T) * indiciesPerSet);
+	cudaMalloc((void**)&d_family_B_less_A, sizeof(T) * indiciesPerSet);
 	cudaMalloc((void**)&d_inter, sizeof(T) * intersectionSize);
 
 	//copy to device
-	cudaMemcpy(d_A, family_A, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B, family_B, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_family_A_less_B, h_family_A_less_B, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_family_B_less_A, h_family_B_less_A, sizeof(T) * sizeOfSets, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_A, family_A, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_B, family_B, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_family_A_less_B, h_family_A_less_B, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_family_B_less_A, h_family_B_less_A, sizeof(T) * indiciesPerSet, cudaMemcpyHostToDevice);
 	
 
 	T* d_result;
@@ -275,7 +313,8 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 	cudaMalloc(&d_result, sizeof(T)*(SUBSETS_PER_FAMILY * SUBSETS_PER_FAMILY));
 
 	// Copy device function pointer to host side
-	cudaMemcpyFromSymbol(&d_metric, *metric, sizeof(metric_t<T>));
+	cudaMemcpyFromSymbol(&d_metric, *metric, sizeof(pseudometric_t<T>));
+	cudaMemcpyFromSymbol(&d_embeddedMetric, *embeddedMetric, sizeof(metric_t<T>));
 
 	//TODO: fix kernel parameters
 	//NOT THE CASE ANYMORE
@@ -306,7 +345,8 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 		VECTOR_SIZE,
 		VECTORS_PER_SUBSET,
 		SUBSETS_PER_FAMILY,
-		intersectionSize
+		intersectionSize,
+		d_embeddedMetric
 	);
 
 	cudaDeviceSynchronize();
@@ -319,42 +359,47 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 
 	result1 /= (SUBSETS_PER_FAMILY * sizeOfFamilyAUnionFamilyB);
 
-	descriptiveIntersectionGPU << <1, numberOfVectorsPerFamily, intersectionSize * sizeof(float) >> > (
-		d_family_A_less_B,
-		d_B,
-		d_inter,
-		intersectionSize,
-		minFloat,
-		SUBSETS_PER_FAMILY,
-		VECTORS_PER_SUBSET,
-		VECTOR_SIZE
-	);
+	if (!familiesAreDisjoint) {
 
-	runMetricOnGPU<T> << <metricGrid, metricBlock, metricSharedMemorySize * sizeof(T) >> > (
-		d_metric,
-		d_family_A_less_B,
-		d_B,
-		d_inter,
-		d_result,
-		minFloat,
-		VECTOR_SIZE,
-		VECTORS_PER_SUBSET,
-		SUBSETS_PER_FAMILY,
-		intersectionSize
-	);
+		descriptiveIntersectionGPU << <1, numberOfVectorsPerFamily, intersectionSize * sizeof(float) >> > (
+			d_family_A_less_B,
+			d_B,
+			d_inter,
+			intersectionSize,
+			minFloat,
+			SUBSETS_PER_FAMILY,
+			VECTORS_PER_SUBSET,
+			VECTOR_SIZE
+			);
 
-	cudaDeviceSynchronize();
-	cudaMemcpy(h_result, d_result, sizeof(T) * (SUBSETS_PER_FAMILY * SUBSETS_PER_FAMILY), 
-		cudaMemcpyDeviceToHost);
-	T result2 = 0;
-	for (unsigned i = 0; i < (SUBSETS_PER_FAMILY * SUBSETS_PER_FAMILY); i++) {
-		result2 += h_result[i];
+		runMetricOnGPU<T> << <metricGrid, metricBlock, metricSharedMemorySize * sizeof(T) >> > (
+			d_metric,
+			d_family_A_less_B,
+			d_B,
+			d_inter,
+			d_result,
+			minFloat,
+			VECTOR_SIZE,
+			VECTORS_PER_SUBSET,
+			SUBSETS_PER_FAMILY,
+			intersectionSize,
+			d_embeddedMetric
+		);
+
+		cudaDeviceSynchronize();
+		cudaMemcpy(h_result, d_result, sizeof(T) * (SUBSETS_PER_FAMILY * SUBSETS_PER_FAMILY),
+			cudaMemcpyDeviceToHost);
+		T result2 = 0;
+		for (unsigned i = 0; i < (SUBSETS_PER_FAMILY * SUBSETS_PER_FAMILY); i++) {
+			result2 += h_result[i];
+		}
+		result2 /= (SUBSETS_PER_FAMILY * sizeOfFamilyAUnionFamilyB);
+
+		result = result1 + result2;
 	}
-	result2 /= (SUBSETS_PER_FAMILY * sizeOfFamilyAUnionFamilyB);
-
-	T result = result1 + result2;
-
-	//cout << "d Iterated Pseudometric Distance: " << result << endl;
+	else {
+		result = result1 * 2;
+	}
 
 	CUDA_CHECK_RETURN(cudaFree((void*)d_A));
 	CUDA_CHECK_RETURN(cudaFree((void*)d_B));
@@ -365,13 +410,6 @@ T dIteratedPseudometric(T* family_A, T* family_B, metric_t<T>* metric) {
 	CUDA_CHECK_RETURN(cudaFree((void*)d_result));
 	CUDA_CHECK_RETURN(cudaDeviceReset());
 	return result;
-}
-
-void initNegative(float* data, unsigned size) {
-
-	for (unsigned i = 0; i < size; ++i) {
-		data[i] = minFloat;
-	}
 }
 
 //TODO: this needs a rework like mad (I don't even want to use the word efficiency here...)
@@ -587,24 +625,44 @@ int main(void) {
 	///////////////////////////////////////////////////////////
 	cout << "d-iterated Pseudometric with Descriptive Jaccard Distance:" << endl;
 	cout << "DELTA_d_J(A,A) = " << 
-		dIteratedPseudometric<float>(family_A, family_A, &p_desc_jaccard_dist<float>) << endl;
+		dIteratedPseudometric<float>(family_A, family_A, &p_descJaccardDistance<float>) << endl;
 	cout << "DELTA_d_J(A,B) = " << 
-		dIteratedPseudometric<float>(family_A, family_B, &p_desc_jaccard_dist<float>) << endl;
+		dIteratedPseudometric<float>(family_A, family_B, &p_descJaccardDistance<float>) << endl;
 	cout << "DELTA_d_J(A,C) = " << 
-		dIteratedPseudometric<float>(family_A, family_C, &p_desc_jaccard_dist<float>) << endl;
+		dIteratedPseudometric<float>(family_A, family_C, &p_descJaccardDistance<float>) << endl;
 	cout << "DELTA_d_J(B,C) = " << 
-		dIteratedPseudometric<float>(family_B, family_C, &p_desc_jaccard_dist<float>) << endl;
+		dIteratedPseudometric<float>(family_B, family_C, &p_descJaccardDistance<float>) << endl;
 	cout << endl;
 	///////////////////////////////////////////////////////////
 	cout << "d-iterated Pseudometric with Descriptive Hausdorff (with Hamming) Distance:" << endl;
 	cout << "DELTA_d_H(A,A) = " <<
-		dIteratedPseudometric<float>(family_A, family_A, &p_desc_hausdorff_dist<float>) << endl;
+		dIteratedPseudometric<float>(
+			family_A, 
+			family_A, 
+			&p_descHausdorffDistance<float>, 
+			&p_vectorHammingDistance<float>
+		) << endl;
 	cout << "DELTA_d_H(A,B) = " <<
-		dIteratedPseudometric<float>(family_A, family_B, &p_desc_hausdorff_dist<float>) << endl;
+		dIteratedPseudometric<float>(
+			family_A, 
+			family_B, 
+			&p_descHausdorffDistance<float>,
+			&p_vectorHammingDistance<float>
+		) << endl;
 	cout << "DELTA_d_H(A,C) = " <<
-		dIteratedPseudometric<float>(family_A, family_C, &p_desc_hausdorff_dist<float>) << endl;
+		dIteratedPseudometric<float>(
+			family_A, 
+			family_C, 
+			&p_descHausdorffDistance<float>,
+			&p_vectorHammingDistance<float>
+		) << endl;
 	cout << "DELTA_d_H(B,C) = " <<
-		dIteratedPseudometric<float>(family_B, family_C, &p_desc_hausdorff_dist<float>) << endl;
+		dIteratedPseudometric<float>(
+			family_B, 
+			family_C,
+			&p_descHausdorffDistance<float>,
+			&p_vectorHammingDistance<float>
+		) << endl;
 	cout << endl;
 	///////////////////////////////////////////////////////////
 
