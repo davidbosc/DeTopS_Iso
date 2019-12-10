@@ -36,7 +36,7 @@ template<typename T>
 using metric_t = T(*) (T*, T*, unsigned, unsigned, unsigned, float);
 
 template<typename T>
-using pseudometric_t = T(*) (T*, T*, T*, unsigned, unsigned, unsigned, float, unsigned, unsigned, metric_t<T>);
+using pseudometric_t = T(*) (T*, T*, T*, unsigned, unsigned, unsigned, float, unsigned, unsigned, unsigned, metric_t<T>);
 
 template<typename T>
 __host__ __device__ T vectorHammingDistance(
@@ -70,6 +70,7 @@ __host__ __device__ T descJaccardDistance(
 	float minFloat,
 	unsigned VECTOR_SIZE,
 	unsigned VECTORS_PER_SUBSET,
+	unsigned SUBSETS_PER_FAMILY,
 	metric_t<T> embeddedMetric
 ) {
 
@@ -78,10 +79,14 @@ __host__ __device__ T descJaccardDistance(
 	
 	//starting at index_B * size_A + index_A of the array containing all descriptive intersections
 	//(in row major layout), get all the vectors that aren't minFloat
-	unsigned desc_intersections_index = index_A * 2 + index_B;
+	unsigned desc_intersections_index = index_A * SUBSETS_PER_FAMILY + index_B;
+
+	unsigned subsetAIndex = index_A * VECTOR_SIZE * VECTORS_PER_SUBSET;
+	unsigned subsetBIndex = index_B * VECTOR_SIZE * VECTORS_PER_SUBSET;
+
 	unsigned inputSetVectorOffset = desc_intersections_index * VECTOR_SIZE * VECTORS_PER_SUBSET;
 	
-	float maxUnionSize = VECTORS_PER_SUBSET * 2;
+	//float maxUnionSize = VECTORS_PER_SUBSET * 2;
 
 	for (int i = 0; i < size; i += VECTOR_SIZE) { 
 		if (desc_intersection[inputSetVectorOffset + i] != minFloat) {
@@ -89,7 +94,37 @@ __host__ __device__ T descJaccardDistance(
 		}
 	}
 
-	unionCardinality = maxUnionSize - descriptiveIntersectionCardinality;
+	//get the number of vectors in the description of A
+	for (int i = 0; i < size; i += VECTOR_SIZE) {
+		if (A_desc[subsetAIndex + i] != minFloat) {
+			unionCardinality += 1.0f;
+		}
+	}
+
+	//get the number of vectors in the description of B, not in A
+	for (int i = 0; i < size; i += VECTOR_SIZE) {
+		//for every vector in B's description that's not the initilized minFloat
+		if (B_desc[subsetBIndex + i] != minFloat) {
+			bool isUnique = true;
+			for (int j = 0; isUnique && j < size; j += VECTOR_SIZE) {
+				bool termIsRepeated = true;
+				//Check it against every term of the vector in the description of A
+				for (int k = 0; termIsRepeated && k < VECTOR_SIZE; k++) {
+					if (B_desc[subsetBIndex + i + k] != A_desc[subsetAIndex + j + k]) {
+						termIsRepeated = false;
+					}
+				}
+				if (termIsRepeated) {
+					isUnique = false;
+				}
+			}
+			if (isUnique) {
+				unionCardinality += 1.0f;
+			}
+		}
+	}
+
+	//unionCardinality = maxUnionSize - descriptiveIntersectionCardinality;
 	return 1.0f - (descriptiveIntersectionCardinality / unionCardinality);
 }
 
@@ -104,6 +139,7 @@ __host__ __device__ T descHausdorffDistance(
 	float minFloat,
 	unsigned VECTOR_SIZE,
 	unsigned VECTORS_PER_SUBSET,
+	unsigned SUBSETS_PER_FAMILY,
 	metric_t<T> embeddedMetric
 ) {
 	unsigned* distanceBetweenEachVector = new unsigned[VECTORS_PER_SUBSET * VECTORS_PER_SUBSET];
@@ -480,6 +516,7 @@ __global__ void runMetricOnGPU(
 			minFloat,
 			VECTOR_SIZE,
 			VECTORS_PER_SUBSET,
+			SUBSETS_PER_FAMILY,
 			embeddedMetric
 		);
 	}
@@ -704,6 +741,7 @@ T* runMetricOnCPU(
 				minFloat,
 				VECTOR_SIZE,
 				VECTORS_PER_SUBSET,
+				SUBSETS_PER_FAMILY,
 				embeddedMetric
 			);
 		}
@@ -992,9 +1030,10 @@ int main(void) {
 	cout << endl;
 	/////////////////////////////////////////////////////////////
 	cout << "d-iterated Pseudometric with Descriptive Jaccard Distance (GPU):" << endl;
+	pseudometric_t<float>* test = &p_descJaccardDistance<float>;
 	/////////////////////////////////////////////////////////////
 	cout << "DELTA_d_J(A,A) = " << 
-		dIteratedPseudometricGPU<float>(family_A, family_A, &p_descJaccardDistance<float>) << endl;
+		dIteratedPseudometricGPU<float>(family_A, family_A, test) << endl;
 	cout << "DELTA_d_J(A,B) = " << 
 		dIteratedPseudometricGPU<float>(family_A, family_B, &p_descJaccardDistance<float>) << endl;
 	cout << "DELTA_d_J(A,C) = " << 
